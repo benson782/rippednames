@@ -5,7 +5,6 @@ const GameModule = require('./game');
 const Http = require('http').Server(App);
 const Io = require('socket.io')(Http);
 const Game = GameModule.Game;
-const Player = GameModule.Player;
 
 const internals = {};
 
@@ -25,7 +24,7 @@ Io.on('connection', (socket) => {
     socket.username = '';
     socket.gameId = '';
 
-    console.log('User has connected');
+    console.log('User has connected. ' + internals.numUsers + ' user(s) are connected');
 
     socket.on('disconnect', () => {
 
@@ -40,7 +39,7 @@ Io.on('connection', (socket) => {
             // Get this socket to leave the room it previously joined
             socket.leave(socket.gameId);
 
-            console.log(socket.username + ' left game ' + socket.gameId);
+            console.log('[' + socket.gameId + '] ' + socket.username + ' left game');
 
             // If there are no more players in this game instance:
             if (internals.gameInstances[socket.gameId].players.size === 0) {
@@ -52,7 +51,7 @@ Io.on('connection', (socket) => {
             }
         }
 
-        console.log('User has disconnected');
+        console.log('User has disconnected. ' + internals.numUsers + ' user(s) are connected');
     });
 
     socket.on('create game', (data, callback) => {
@@ -86,7 +85,7 @@ Io.on('connection', (socket) => {
                 socket.username = data.username;
                 socket.gameId = gameId;
 
-                internals.gameInstances[gameId] = { players: new Set(), game: new Game(gameId, new Player(data.username)) };
+                internals.gameInstances[gameId] = { players: new Set(), game: new Game(gameId, data.username) };
 
                 // Add the username the players set
                 internals.gameInstances[gameId].players.add(data.username);
@@ -105,8 +104,6 @@ Io.on('connection', (socket) => {
         if (gameCreated) {
             callback( { status: 'success', gameId: socket.gameId } );
             console.log(data.username + ' created new game ' + socket.gameId);
-
-            Io.to(socket.gameId).emit('update team settings', getCurrentPlayers(socket.gameId));
         }
         else {
             callback( failStatus('Unable to create new game') );
@@ -129,64 +126,87 @@ Io.on('connection', (socket) => {
             if (internals.gameInstances[data.gameId].players.has(data.username)) {
 
                 callback(failStatus('Unable to join game due to duplicate username'));
-                console.log(data.username + ' is unable to join game ' + data.gameId + ' due to duplicate username');
+                console.log('[' + data.gameId + '] ' + data.username + ' is unable to join game due to duplicate username');
                 return;
             }
 
-            // Associate this socket with the username and gameId
-            socket.username = data.username;
-            socket.gameId = data.gameId;
+            try {
 
-            // Add the username the players set
-            internals.gameInstances[data.gameId].players.add(data.username);
+                // Add a new player to the game
+                internals.gameInstances[data.gameId].game.AddPlayer(data.username);
 
-            // Add a new player to the game
-            internals.gameInstances[data.gameId].game.AddPlayer(new Player(data.username));
+                // Add the username the players set
+                internals.gameInstances[data.gameId].players.add(data.username);
 
-            // Join this socket to a room identified by the gameId
-            socket.join(data.gameId);
+                // Associate this socket with the username and gameId
+                socket.username = data.username;
+                socket.gameId = data.gameId;
 
-            callback(successStatus());
-            console.log(data.username + ' joined game ' + data.gameId);
+                // Join this socket to a room identified by the gameId
+                socket.join(data.gameId);
+
+                callback(successStatus());
+                console.log('[' + socket.gameId + '] ' + data.username + ' joined game');
+            }
+            catch (err) {
+
+                callback(failStatus(err));
+                console.log(data.username + ' is unable to join game ' + data.gameId);
+            }
         }
         // Otherwise, the gameId does not exist:
         else {
             callback(failStatus('Nonexistant game ID'));
             console.log(data.username + ' is unable to join nonexistant game ' + data.gameId);
         }
-
-        Io.to(socket.gameId).emit('update team settings', getCurrentPlayers(data.gameId));
     });
 
     socket.on('select team', (data, callback) => {
 
-        if (data.team === 'red') {
-            internals.gameInstances[socket.gameId].AssignPlayerToTeam(socket.username, 0);
+        console.log('[' + socket.gameId + '] ' + socket.username + ' selected to be on ' + data.team + ' team');
+
+        try {
+            internals.gameInstances[socket.gameId].game.AssignPlayerToTeam(socket.username, data.team);
+            callback(successStatus());
         }
-        else {
-            internals.gameInstances[socket.gameId].AssignPlayerToTeam(socket.username, 1);
+        catch (err) {
+            callback(failStatus(err));
+            console.log('[' + socket.gameId + '] Error: ' + err);
         }
 
-        callback(successStatus());
-        console.log(socket.username + ' selected to be on ' + data.team + 'team in game ' + socket.gameId);
-
-        Io.to(socket.gameId).emit('update team settings', getCurrentPlayers());
+        Io.to(socket.gameId).emit('update team settings', getTeams(socket.gameId));
     });
 
     socket.on('select as spymaster', (data, callback) => {
 
-        callback(successStatus());
-        console.log(socket.username + ' selected to be a spymaster in game ' + socket.gameId);
+        console.log('[' + socket.gameId + '] ' + socket.username + ' selected to be a spymaster on ' + data.team);
 
-        Io.to(socket.gameId).emit('update team settings', getCurrentPlayers(socket.gameId));
+        try {
+            internals.gameInstances[socket.gameId].game.AssignSpymaster(socket.username, data.team);
+            callback(successStatus());
+        }
+        catch (err) {
+            callback(failStatus(err));
+            console.log('[' + socket.gameId + '] Error: ' + err);
+        }
+
+        Io.to(socket.gameId).emit('update team settings', getTeams(socket.gameId));
     });
 
-    socket.on('randomize team', (data, callback) => {
+    socket.on('randomize team', (callback) => {
 
-        callback(successStatus());
-        console.log(socket.username + ' randomized the team in game ' + socket.gameId);
+        try {
+            internals.gameInstances[socket.gameId].game.AssignTeamsRandomly();
+            internals.gameInstances[socket.gameId].game.ChooseSpymasters();
+            callback(successStatus());
+        }
+        catch (err) {
+            callback(failStatus(err));
+            console.log('[' + socket.gameId + '] Error: ' + err);
+        }
+        console.log('[' + socket.gameId + '] ' + socket.username + ' randomized the team');
 
-        Io.to(socket.gameId).emit('update team settings', getCurrentPlayers(socket.gameId));
+        Io.to(socket.gameId).emit('update team settings', getTeams(socket.gameId));
     });
 
     socket.on('start game', (data, callback) => {
@@ -198,44 +218,85 @@ Io.on('connection', (socket) => {
             internals.gameInstances[socket.gameId].Start();
 
             callback(successStatus());
-            console.log(socket.username + ' started game ' + socket.gameId);
+            console.log('[' + socket.gameId + '] ' + socket.username + ' started game');
 
-            Io.to(socket.gameId).emit('update game state', getCurrentPlayers(socket.gameId));
+            Io.to(socket.gameId).emit('update team settings', getTeams(socket.gameId));
+            Io.to(socket.gameId).emit('update game state', getGameState(socket.gameId));
         }
         //Otherwise, the game is not ready to start:
         else {
 
-            callback(failStatus('Game cannot start with current settings'));
-            console.log(socket.username + ' was unable to start game ' + socket.gameId);
+            callback(failStatus(err));
+            console.log('[' + socket.gameId + '] ' + socket.username + ' was unable to start game');
         }
     });
 
     socket.on('reset game', (data, callback) => {
 
-        callback(successStatus());
-        console.log(socket.username + ' reseted game ' + socket.gameId);
-        Io.to(socket.gameId).emit('update team settings', getCurrentPlayers(socket.gameId));
+        try {
+
+            internals.gameInstances[socket.gameId].Reset();
+
+            callback(successStatus());
+            console.log('[' + socket.gameId + '] ' + socket.username + ' reseted game');
+            Io.to(socket.gameId).emit('update team settings', getTeams(socket.gameId));
+        }
+        catch (err) {
+
+            callback(failStatus(err));
+            console.log('[' + socket.gameId + '] ' + socket.username + ' was unable to reset game');
+        }
     });
 
     socket.on('provide clue', (data, callback) => {
 
-        callback(successStatus());
-        console.log(socket.username + ' provided clue ' + data.word + ':' + data.count + ' in game ' + socket.gameId);
-        Io.to(socket.gameId).emit('update game state');
+        try {
+
+            internals.gameInstances[socket.gameId].GiveClue(socket.username, data.word, data.count);
+
+            callback(successStatus());
+            console.log('[' + socket.gameId + '] ' + socket.username + ' provided clue ' + data.word + ':' + data.count);
+            Io.to(socket.gameId).emit('update game state', getGameState(socket.gameId));
+        }
+        catch (err) {
+
+            callback(failStatus(err));
+            console.log('[' + socket.gameId + '] ' + socket.username + ' was unable to give clue ' + data.word + ':' + data.count);
+        }
     });
 
     socket.on('select word', (data, callback) => {
 
-        callback(successStatus());
-        console.log(socket.username + ' started game ' + socket.gameId);
-        Io.to(socket.gameId).emit('update game state');
+        try {
+
+            internals.gameInstances[socket.gameId].SelectWord(socket.username, data.word);
+
+            callback(successStatus());
+            console.log('[' + socket.gameId + '] ' + socket.username + ' selected word ' + data.word);
+            Io.to(socket.gameId).emit('update game state', getGameState(socket.gameId));
+        }
+        catch (err) {
+
+            callback(failStatus(err));
+            console.log('[' + socket.gameId + '] ' + socket.username + ' was unable to select word ' + data.word);
+        }
     });
 
     socket.on('pass turn', (data, callback) => {
 
-        callback(successStatus());
-        console.log(socket.username + ' started game ' + socket.gameId);
-        Io.to(socket.gameId).emit('update game state');
+        try {
+
+            internals.gameInstances[socket.gameId].PassTurn(socket.username);
+
+            callback(successStatus());
+            console.log('[' + socket.gameId + '] ' + socket.username + ' passed turn');
+            Io.to(socket.gameId).emit('update game state', getGameState(socket.gameId));
+        }
+        catch (err) {
+
+            callback(failStatus(err));
+            console.log('[' + socket.gameId + '] ' + socket.username + ' was unable to pass turn');
+        }
     });
 });
 
@@ -244,19 +305,33 @@ Http.listen(internals.port, () => {
     console.log('listening on *:' + internals.port);
 });
 
-const getCurrentPlayers = function (gameId) {
+const getGameState = (gameId) => {
 
     if (!internals.gameInstances.hasOwnProperty(gameId)) {
-        return [];
+        console.log('[' + gameId + '] ' + 'Unable to get game state for game');
+        return {};
     }
 
-    const playerList = [];
+    return internals.gameInstances[gameId].GetGameState();
+};
 
-    for (const player of internals.gameInstances[gameId].players.keys()) {
-        playerList.push(player);
+const getTeams = (gameId) => {
+
+    if (!internals.gameInstances.hasOwnProperty(gameId)) {
+        console.log('[' + gameId + '] ' + 'Unable to get teams for game');
+        return {};
     }
 
-    return playerList;
+    const teamSettings = { teams: [] };
+
+    for (const team of internals.gameInstances[gameId].game.GetTeams()) {
+
+        const teamObject = { name: team.id, players: team.players, spymaster: team.spymaster };
+
+        teamSettings.teams.push(teamObject);
+    }
+
+    return teamSettings;
 };
 
 const successStatus = () => {
@@ -264,7 +339,7 @@ const successStatus = () => {
     return { status: 'success' };
 };
 
-const failStatus = function (msg) {
+const failStatus = (msg) => {
 
     return { status: 'fail', message: msg };
 };
